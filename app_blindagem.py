@@ -6,7 +6,7 @@ import plotly.express as px
 import os
 
 # 1. Configuração e Estilo
-st.set_page_config(page_title="Rastreador Blindagem 3.3", layout="wide")
+st.set_page_config(page_title="Blindagem 3.4: Projeção de Renda", layout="wide")
 
 st.markdown("""
     <style>
@@ -19,7 +19,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.3")
+st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.4")
 
 # --- 2. SISTEMA DE FAVORITOS ---
 FAVORITOS_FILE = "favoritos.txt"
@@ -67,7 +67,7 @@ def get_data_v3(ticker):
     except: return None
 
 # --- 5. INTERFACE EM ABAS ---
-tab1, tab2 = st.tabs(["🔍 Rastreador de Oportunidades", "⚖️ Gestão de Aportes"])
+tab1, tab2 = st.tabs(["🔍 Rastreador de Oportunidades", "💰 Gestor de Renda & Aportes"])
 
 with tab1:
     if st.button("🚀 Analisar Mercado"):
@@ -103,50 +103,59 @@ with tab1:
             }), use_container_width=True)
 
 with tab2:
-    st.subheader("⚖️ Planejador de Novo Aporte")
+    st.subheader("⚖️ Planejador de Renda Passiva")
     
     col_input1, col_input2 = st.columns(2)
     with col_input1:
-        novo_aporte = st.number_input("Valor do Novo Aporte (R$):", min_value=0.0, value=100.0, step=50.0)
+        novo_aporte = st.number_input("Valor do Novo Aporte (R$):", min_value=0.0, value=100.0, step=100.0)
     
     lista_rebal = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
     
     if 'df_rebal' not in st.session_state:
         st.session_state.df_rebal = pd.DataFrame({
             'Ação': lista_rebal,
-            'Quantidade Atual': [0] * len(lista_rebal),
+            'Qtd Atual': [0] * len(lista_rebal),
             'Peso Alvo (%)': [round(100/len(lista_rebal), 1)] * len(lista_rebal)
         })
 
     df_usuario = st.data_editor(st.session_state.df_rebal, use_container_width=True, num_rows="dynamic")
     
-    if st.button("⚖️ Calcular Onde Investir"):
-        with st.spinner('Processando preços atuais...'):
+    if st.button("📊 Projetar Renda e Rebalancear"):
+        with st.spinner('Calculando projeções...'):
             lista_dados_rebal = []
             for t in df_usuario['Ação']:
                 d = get_data_v3(t)
-                if d: lista_dados_rebal.append({'Ação': t, 'Preço': d['Preço']})
+                if d: lista_dados_rebal.append({'Ação': t, 'Preço': d['Preço'], 'Div_Anual': d['Div_Anual']})
             
             if lista_dados_rebal:
                 df_precos = pd.DataFrame(lista_dados_rebal)
                 df_merged = pd.merge(df_usuario, df_precos, on='Ação')
                 
-                df_merged['Valor Atual'] = df_merged['Quantidade Atual'] * df_merged['Preço']
+                df_merged['Valor Atual'] = df_merged['Qtd Atual'] * df_merged['Preço']
                 patrimonio_existente = df_merged['Valor Atual'].sum()
                 patrimonio_total_novo = patrimonio_existente + novo_aporte
                 
                 df_merged['Valor Alvo'] = patrimonio_total_novo * (df_merged['Peso Alvo (%)'] / 100)
                 df_merged['Diferença (R$)'] = df_merged['Valor Alvo'] - df_merged['Valor Atual']
                 
-                # Apenas sugere compra se a diferença for positiva (usando o aporte)
+                # Cálculo de Compra e Renda
                 df_merged['Comprar (Qtd)'] = (df_merged['Diferença (R$)'] / df_merged['Preço']).apply(lambda x: max(0, np.floor(x)))
-                df_merged['Total a Investir'] = df_merged['Comprar (Qtd)'] * df_merged['Preço']
+                df_merged['Qtd Final'] = df_merged['Qtd Atual'] + df_merged['Comprar (Qtd)']
+                df_merged['Renda Anual Proj.'] = df_merged['Qtd Final'] * df_merged['Div_Anual']
+                df_merged['Renda Mensal Média'] = df_merged['Renda Anual Proj.'] / 12
                 
-                st.metric("Patrimônio Após Aporte", f"R$ {patrimonio_total_novo:,.2f}", delta=f"R$ {novo_aporte} novo")
+                # Métricas de Resumo
+                total_mensal = df_merged['Renda Mensal Média'].sum()
+                total_anual = df_merged['Renda Anual Proj.'].sum()
                 
-                st.dataframe(df_merged[['Ação', 'Preço', 'Quantidade Atual', 'Peso Alvo (%)', 'Comprar (Qtd)', 'Total a Investir']].style.format({
-                    'Preço': 'R$ {:.2f}', 'Peso Alvo (%)': '{:.1f}%', 'Total a Investir': 'R$ {:.2f}'
-                }).highlight_max(subset=['Comprar (Qtd)'], color='#1e2630'), use_container_width=True)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Patrimônio Total", f"R$ {patrimonio_total_novo:,.2f}")
+                c2.metric("Renda Mensal Média", f"R$ {total_mensal:,.2f}")
+                c3.metric("Renda Anual Estimada", f"R$ {total_anual:,.2f}")
                 
-                total_alocado = df_merged['Total a Investir'].sum()
-                st.info(f"Dos R$ {novo_aporte:.2f} informados, o sistema alocou **R$ {total_alocado:.2f}** para manter o equilíbrio da carteira.")
+                st.write("### Sugestão de Alocação e Projeção Individual")
+                st.dataframe(df_merged[['Ação', 'Preço', 'Qtd Final', 'Peso Alvo (%)', 'Comprar (Qtd)', 'Renda Mensal Média']].style.format({
+                    'Preço': 'R$ {:.2f}', 'Peso Alvo (%)': '{:.1f}%', 'Renda Mensal Média': 'R$ {:.2f}'
+                }).highlight_max(subset=['Renda Mensal Média'], color='#1e2630'), use_container_width=True)
+                
+                st.info(f"💡 Com este aporte e configuração, sua carteira passará a render, em média, **R$ {total_mensal:.2f} por mês**.")
