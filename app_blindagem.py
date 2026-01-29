@@ -3,157 +3,142 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# Configuração da Página
+# 1. Configuração da Página
 st.set_page_config(page_title="Rastreador Carteira Blindada", layout="wide")
 
 st.title("🛡️ Rastreador de Ações: O Protocolo de Segurança")
 st.markdown("""
-Este app analisa ações da B3 baseando-se nos filtros de **Benjamin Graham** (Valor Intrínseco), 
-**Décio Bazin** (Dividendos) e Indicadores de **Saúde Financeira** (Inspirado em Piotroski/Altman).
+Este app busca automatizar sua análise. Ele calcula o **Preço Justo (Graham)**, 
+o **Preço Teto (Bazin)** e um **Score de Saúde** baseado em rentabilidade e solvência.
 """)
 
-# --- BARRA LATERAL (Entradas) ---
-st.sidebar.header("Configurações")
+# --- 2. BARRA LATERAL (Entradas e Filtros) ---
+st.sidebar.header("Configurações de Filtro")
+# Tickers sugeridos baseados no seu histórico de interesse
 tickers_input = st.sidebar.text_area(
     "Digite os Tickers (separados por vírgula):", 
-    "BBSE3, PETR4, VALE3, WEGE3, ITSA4, SAPR11, TAEE11, EGIE3"
+    "SAPR11, BBSE3, BBAS3, CMIG4, PETR4, VALE3, TAEE11, EGIE3"
 )
-margem_graham = st.sidebar.slider("Margem de Segurança Graham (%)", 0, 50, 30)
-yield_bazin = st.sidebar.slider("Yield Mínimo Bazin (%)", 4, 10, 6)
+margem_graham_req = st.sidebar.slider("Margem de Segurança Graham Mínima (%)", 0, 50, 30)
+yield_bazin_req = st.sidebar.slider("Yield Mínimo Desejado Bazin (%)", 4, 12, 6)
 
-# --- FUNÇÕES DE CÁLCULO ---
+# --- 3. FUNÇÕES DE COLETA E CÁLCULO ---
 
 def get_data(ticker):
-    """Baixa dados fundamentais do Yahoo Finance"""
-    if not ticker.endswith(".SA"):
-        ticker += ".SA"
+    """Busca dados em tempo real no Yahoo Finance"""
+    ticker_sa = ticker.strip().upper()
+    if not ticker_sa.endswith(".SA"):
+        ticker_sa += ".SA"
     
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    
-    # Tratamento de erro se a ação não existir
-    if 'currentPrice' not in info:
+    try:
+        stock = yf.Ticker(ticker_sa)
+        info = stock.info
+        
+        if 'currentPrice' not in info:
+            return None
+
+        price = info.get('currentPrice', 0)
+        lpa = info.get('trailingEps', 0)
+        vpa = info.get('bookValue', 0)
+        
+        # Coleta de Dividendos
+        dy_decimal = info.get('dividendYield', 0)
+        if dy_decimal is None: dy_decimal = 0
+        
+        return {
+            "Ticker": ticker.strip().upper(),
+            "Preço Atual": price,
+            "LPA": lpa,
+            "VPA": vpa,
+            "DY %": dy_decimal * 100,
+            "Div. Anual": price * dy_decimal,
+            "ROE": info.get('returnOnEquity', 0),
+            "Margem Líq.": info.get('profitMargins', 0),
+            "Liquidez Corr.": info.get('currentRatio', 0)
+        }
+    except:
         return None
 
-    # Dados Básicos
-    price = info.get('currentPrice', 0)
-    lpa = info.get('trailingEps', 0)
-    vpa = info.get('bookValue', 0)
-    
-    # Dados para Bazin (Dividendos últimos 12 meses)
-    # Tenta pegar o yield informado, se não, tenta calcular do histórico
-    dy_percent = info.get('dividendYield', 0)
-    if dy_percent is None: dy_percent = 0
-    dividend_ttm = price * dy_percent
-
-    # Dados de Saúde (Proxies para Piotroski/Altman)
-    roe = info.get('returnOnEquity', 0)
-    divida_liquida_ebitda = info.get('debtToEquity', 0) # Aproximação usada aqui
-    margem_liquida = info.get('profitMargins', 0)
-    current_ratio = info.get('currentRatio', 0) # Liquidez Corrente
-
-    return {
-        "Ticker": ticker.replace(".SA", ""),
-        "Preço Atual": price,
-        "LPA": lpa,
-        "VPA": vpa,
-        "Div. 12m": dividend_ttm,
-        "ROE": roe,
-        "Margem Líq.": margem_liquida,
-        "Liquidez Corr.": current_ratio,
-        "Setor": info.get('sector', 'N/A')
-    }
-
-def calcular_indicadores(df):
+def processar_analise(lista_tickers):
     resultados = []
     
-    for index, row in df.iterrows():
-        # 1. Graham (Raiz Quadrada de 22.5 * LPA * VPA)
-        try:
-            val_graham = (22.5 * row['LPA'] * row['VPA'])**0.5
-        except:
-            val_graham = 0
-        
-        if np.isnan(val_graham): val_graham = 0
-        
-        margem_seguranca_graham = ((val_graham - row['Preço Atual']) / val_graham) * 100 if val_graham > 0 else -999
+    for t in lista_tickers:
+        dados = get_data(t)
+        if dados:
+            # Cálculo Graham
+            if dados['LPA'] > 0 and dados['VPA'] > 0:
+                v_graham = (22.5 * dados['LPA'] * dados['VPA'])**0.5
+                m_graham = ((v_graham - dados['Preço Atual']) / v_graham) * 100
+            else:
+                v_graham = 0
+                m_graham = -999
 
-        # 2. Bazin (Dividendo / 0.06)
-        # Ajuste: O usuário define a taxa mínima (ex: 6%)
-        taxa_bazin = yield_bazin / 100
-        teto_bazin = row['Div. 12m'] / taxa_bazin if taxa_bazin > 0 else 0
-        margem_seguranca_bazin = ((teto_bazin - row['Preço Atual']) / teto_bazin) * 100 if teto_bazin > 0 else -999
+            # Cálculo Bazin
+            taxa_bazin = yield_bazin_req / 100
+            t_bazin = dados['Div. Anual'] / taxa_bazin if taxa_bazin > 0 else 0
 
-        # 3. Score de Saúde (Simplificação do Piotroski/Altman para API Gratuita)
-        # Pontuamos de 0 a 4 baseado em métricas chave
-        score_saude = 0
-        if row['ROE'] > 0.10: score_saude += 1        # Rentabilidade ok
-        if row['Margem Líq.'] > 0.10: score_saude += 1 # Eficiência ok
-        if row['Liquidez Corr.'] > 1.0: score_saude += 1 # Solvência Curto Prazo (Altman light)
-        if row['LPA'] > 0: score_saude += 1            # Lucrativa
-        
-        # Filtro de Aprovação
-        passou_graham = margem_seguranca_graham >= margem_graham
-        passou_bazin = margem_seguranca_bazin >= 0 # Bazin aceitamos preço justo ou abaixo
-        passou_saude = score_saude >= 3 # Exige pelo menos 3 de 4 na saúde
-        
-        status = "🛑 Reprovada"
-        if passou_graham and passou_bazin and passou_saude:
-            status = "💎 BLINDADA"
-        elif passou_graham or passou_bazin:
-            status = "⚠️ Observar"
+            # Score de Saúde (0 a 4)
+            score = 0
+            if dados['ROE'] > 0.10: score += 1
+            if dados['Margem Líq.'] > 0.10: score += 1
+            if dados['Liquidez Corr.'] > 1.0: score += 1
+            if dados['LPA'] > 0: score += 1
+            
+            # Lógica de Status
+            if m_graham >= margem_graham_req and dados['Preço Atual'] <= t_bazin and score >= 3:
+                status = "💎 BLINDADA"
+            elif m_graham >= 0 or dados['Preço Atual'] <= t_bazin:
+                status = "⚠️ Observar"
+            else:
+                status = "🛑 Reprovada"
 
-        resultados.append({
-            "Ação": row['Ticker'],
-            "Preço": f"R$ {row['Preço Atual']:.2f}",
-            "Graham (Justo)": f"R$ {val_graham:.2f}",
-            "Margem Graham": f"{margem_seguranca_graham:.1f}%",
-            "Bazin (Teto)": f"R$ {teto_bazin:.2f}",
-            "Score Saúde (0-4)": score_saude,
-            "STATUS": status
-        })
-        
+            resultados.append({
+                "Ação": dados['Ticker'],
+                "Preço": dados['Preço Atual'],
+                "DY %": dados['DY %'],
+                "Graham (Justo)": v_graham,
+                "Margem Graham": m_graham,
+                "Bazin (Teto)": t_bazin,
+                "Score Saúde": score,
+                "STATUS": status
+            })
     return pd.DataFrame(resultados)
 
-# --- EXECUÇÃO PRINCIPAL ---
+# --- 4. EXECUÇÃO E INTERFACE ---
 
-if st.sidebar.button("🔍 Analisar Ações"):
-    tickers_list = [t.strip().upper() for t in tickers_input.split(',')]
+if st.sidebar.button("🔍 Rodar Protocolo de Segurança"):
+    lista = [t.strip() for t in tickers_input.split(',') if t.strip()]
     
-    with st.spinner('Coletando dados da B3... (Isso pode levar alguns segundos)'):
-        dados_brutos = []
-        for t in tickers_list:
-            d = get_data(t)
-            if d:
-                dados_brutos.append(d)
+    with st.spinner('Analisando fundamentos...'):
+        df_final = processar_analise(lista)
         
-        if dados_brutos:
-            df_bruto = pd.DataFrame(dados_brutos)
-            df_final = calcular_indicadores(df_bruto)
+        if not df_final.empty:
+            st.subheader("Resultado do Rastreamento")
             
-            # Exibição
-            st.subheader(f"Resultado da Análise ({len(df_final)} ativos)")
-            
-            # Estilizando a tabela
-            def color_status(val):
-                color = 'red'
-                if val == '💎 BLINDADA': color = 'green'
-                elif val == '⚠️ Observar': color = 'orange'
-                return f'color: {color}; font-weight: bold'
+            # Formatação da Tabela
+            df_view = df_final.copy()
+            df_view['Preço'] = df_view['Preço'].map('R$ {:.2f}'.format)
+            df_view['DY %'] = df_view['DY %'].map('{:.2f}%'.format)
+            df_view['Graham (Justo)'] = df_view['Graham (Justo)'].map('R$ {:.2f}'.format)
+            df_view['Margem Graham'] = df_view['Margem Graham'].map('{:.1f}%'.format)
+            df_view['Bazin (Teto)'] = df_view['Bazin (Teto)'].map('R$ {:.2f}'.format)
 
-            st.dataframe(df_final.style.map(color_status, subset=['STATUS']), use_container_width=True)
+            def highlight_status(val):
+                if val == "💎 BLINDADA": return 'background-color: #d4edda; color: #155724'
+                if val == "⚠️ Observar": return 'background-color: #fff3cd; color: #856404'
+                return 'background-color: #f8d7da; color: #721c24'
+
+            st.dataframe(df_view.style.applymap(highlight_status, subset=['STATUS']), use_container_width=True)
             
-            st.info("""
-            **Legenda do Score de Saúde (0-4):**
-            Baseado em ROE > 10%, Margem Líquida > 10%, Liquidez Corrente > 1.0 e Lucro Positivo.
-            Serve como um filtro rápido de Qualidade/Risco similar ao Piotroski/Altman.
-            """)
-            
-            # Aviso importante
-            st.warning("**Atenção:** Bancos e Seguradoras (BBSE3, ITSA4) podem aparecer distorcidos no método de Graham ou Liquidez Corrente. Analise o setor financeiro separadamente.")
-            
+            # Dicas de Interpretação
+            with st.expander("Clique para entender os critérios"):
+                st.write("""
+                - **Graham**: Preço Justo com base no lucro e patrimônio.
+                - **Bazin**: Preço Teto para garantir o Yield mínimo selecionado.
+                - **Score Saúde**: Analisa se a empresa é lucrativa (LPA > 0), rentável (ROE > 10%), 
+                  eficiente (Margem > 10%) e solvente (Liquidez > 1.0).
+                """)
         else:
-            st.error("Nenhum dado encontrado. Verifique os códigos das ações.")
-
+            st.error("Nenhuma ação encontrada. Verifique os códigos digitados.")
 else:
-    st.write("👈 Configure os filtros na barra lateral e clique em 'Analisar Ações'.")
+    st.info("Ajuste os filtros ao lado e clique em 'Rodar Protocolo de Segurança' para começar.")
