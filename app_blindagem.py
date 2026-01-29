@@ -47,7 +47,7 @@ st.sidebar.divider()
 m_graham_min = st.sidebar.slider("Margem Graham (%)", 0, 50, 20)
 y_bazin_min = st.sidebar.slider("Yield Bazin (%)", 4, 12, 6)
 
-# --- 4. FUNÇÃO DE COLETA EXPANDIDA ---
+# --- 4. FUNÇÃO DE COLETA ---
 def get_data_v3(ticker):
     t_clean = ticker.strip().upper()
     t_sa = t_clean + ".SA" if not t_clean.endswith(".SA") else t_clean
@@ -55,37 +55,14 @@ def get_data_v3(ticker):
         stock = yf.Ticker(t_sa)
         info = stock.info
         if 'currentPrice' not in info: return None
-        
         preco = info.get('currentPrice', 0)
         dy_raw = info.get('dividendYield', 0) or 0
         dy_corrigido = dy_raw if dy_raw < 1.0 else dy_raw / 100
-        
-        # Cálculos adicionais
-        p_l = info.get('trailingPE', 0) or 0
-        p_vp = (preco / info.get('bookValue', 1)) if info.get('bookValue') and info.get('bookValue') != 0 else 0
-        p_sr = info.get('priceToSalesTrailing12Months', 0) or 0
-        ev_ebitda = info.get('enterpriseToEbitda', 0) or 0
-        ev_ebit = info.get('enterpriseToRevenue', 0) or 0
-        div_bruta_patrim = info.get('debtToEquity', 0) or 0
-        div_liquida_patrim = info.get('debtToEquity', 0) or 0  # Ajuste conforme disponibilidade real
-        
         return {
-            "Ação": t_clean, "Preço": preco, "P/L": p_l, "P/VP": p_vp,
-            "PSR": p_sr, "EV/EBITDA": ev_ebitda, "EV/Receita": ev_ebit,
-            "LPA": info.get('trailingEps', 0) or 0,
+            "Ação": t_clean, "Preço": preco, "LPA": info.get('trailingEps', 0) or 0,
             "VPA": info.get('bookValue', 0) or 0, "DY %": dy_corrigido * 100,
             "Div_Anual": preco * dy_corrigido, "ROE": info.get('returnOnEquity', 0) or 0,
-            "ROIC": info.get('returnOnInvestedCapital', 0) or 0,
-            "Margem_Liq": info.get('profitMargins', 0) or 0,
-            "Margem_Bruta": info.get('grossMargins', 0) or 0,
-            "Margem_EBIT": info.get('ebitdaMargins', 0) or 0,
-            "Liquidez_Corr": info.get('currentRatio', 0) or 0,
-            "Dívida_Líq/Patrim": div_liquida_patrim,
-            "Setor": info.get('sector', 'N/A'),
-            "Indústria": info.get('industry', 'N/A'),
-            "Receita_Total": info.get('totalRevenue', 0) or 0,
-            "EBITDA": info.get('ebitda', 0) or 0,
-            "Lucro_Líquido": info.get('netIncomeToCommon', 0) or 0
+            "Margem_Liq": info.get('profitMargins', 0) or 0, "Liquidez_Corr": info.get('currentRatio', 0) or 0
         }
     except: return None
 
@@ -121,14 +98,8 @@ with tab1:
             st.plotly_chart(px.scatter(df, x="Margem_Graham", y="Score", text="Ação", color="STATUS", size="DY %",
                              color_discrete_map={"💎 BLINDADA": "#00cc66", "⚠️ Observar": "#ffcc00", "🛑 Reprovada": "#ff4d4d"}), use_container_width=True)
 
-            # Mostrar dataframe com todos os novos indicadores
-            st.dataframe(df.style.format({
-                'Preço': 'R$ {:.2f}', 'DY %': '{:.2f}%', 'Graham_Justo': 'R$ {:.2f}', 
-                'Margem_Graham': '{:.1f}%', 'Bazin_Teto': 'R$ {:.2f}',
-                'P/L': '{:.2f}', 'P/VP': '{:.2f}', 'PSR': '{:.2f}', 'EV/EBITDA': '{:.2f}',
-                'ROE': '{:.2%}', 'ROIC': '{:.2%}', 'Margem_Liq': '{:.2%}',
-                'Margem_Bruta': '{:.2%}', 'Margem_EBIT': '{:.2%}',
-                'Receita_Total': '{:,.0f}', 'EBITDA': '{:,.0f}', 'Lucro_Líquido': '{:,.0f}'
+            st.dataframe(df[['Ação', 'Preço', 'DY %', 'Graham_Justo', 'Margem_Graham', 'Bazin_Teto', 'Score', 'STATUS']].style.format({
+                'Preço': 'R$ {:.2f}', 'DY %': '{:.2f}%', 'Graham_Justo': 'R$ {:.2f}', 'Margem_Graham': '{:.1f}%', 'Bazin_Teto': 'R$ {:.2f}'
             }), use_container_width=True)
 
 with tab2:
@@ -188,3 +159,4 @@ with tab2:
                 }).highlight_max(subset=['Renda Mensal Média'], color='#1e2630'), use_container_width=True)
                 
                 st.info(f"💡 Com este aporte e configuração, sua carteira passará a render, em média, **R$ {total_mensal:.2f} por mês**.")
+
