@@ -5,8 +5,8 @@ import numpy as np
 import plotly.express as px
 import os
 
-# 1. Configuração de Estilo e Layout
-st.set_page_config(page_title="Rastreador Blindagem 3.2", layout="wide")
+# 1. Configuração e Estilo
+st.set_page_config(page_title="Rastreador Blindagem 3.3", layout="wide")
 
 st.markdown("""
     <style>
@@ -19,7 +19,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.2")
+st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.3")
 
 # --- 2. SISTEMA DE FAVORITOS ---
 FAVORITOS_FILE = "favoritos.txt"
@@ -33,19 +33,19 @@ def carregar_favoritos():
 def salvar_favoritos(texto):
     with open(FAVORITOS_FILE, "w") as f:
         f.write(texto)
-    st.sidebar.success("✅ Lista de favoritos guardada!")
+    st.sidebar.success("✅ Favoritos salvos!")
 
 # --- 3. BARRA LATERAL ---
-st.sidebar.header("⚙️ Configurações e Favoritos")
+st.sidebar.header("⚙️ Configurações")
 lista_inicial = carregar_favoritos()
-tickers_input = st.sidebar.text_area("Tickers (separe por vírgula):", value=lista_inicial, height=150)
+tickers_input = st.sidebar.text_area("Lista de Tickers:", value=lista_inicial, height=150)
 
-if st.sidebar.button("💾 Salvar como Favoritos"):
+if st.sidebar.button("💾 Salvar Favoritos"):
     salvar_favoritos(tickers_input)
 
 st.sidebar.divider()
-m_graham_min = st.sidebar.slider("Margem Graham Mínima (%)", 0, 50, 20)
-y_bazin_min = st.sidebar.slider("Yield Bazin Desejado (%)", 4, 12, 6)
+m_graham_min = st.sidebar.slider("Margem Graham (%)", 0, 50, 20)
+y_bazin_min = st.sidebar.slider("Yield Bazin (%)", 4, 12, 6)
 
 # --- 4. FUNÇÃO DE COLETA ---
 def get_data_v3(ticker):
@@ -67,10 +67,10 @@ def get_data_v3(ticker):
     except: return None
 
 # --- 5. INTERFACE EM ABAS ---
-tab1, tab2 = st.tabs(["🔍 Rastreador Blindado", "⚖️ Calculadora de Rebalanceamento"])
+tab1, tab2 = st.tabs(["🔍 Rastreador de Oportunidades", "⚖️ Gestão de Aportes"])
 
 with tab1:
-    if st.button("🚀 Iniciar Rastreamento"):
+    if st.button("🚀 Analisar Mercado"):
         lista = [t.strip() for t in tickers_input.split(',') if t.strip()]
         lista_dados = []
         bar = st.progress(0)
@@ -95,30 +95,22 @@ with tab1:
             df['STATUS'] = df.apply(definir_status, axis=1)
             df = df.sort_values(by=['STATUS', 'Margem_Graham'], ascending=[True, False])
 
-            # Gráfico
-            fig = px.scatter(df, x="Margem_Graham", y="Score", text="Ação", color="STATUS", size="DY %",
-                             color_discrete_map={"💎 BLINDADA": "#00cc66", "⚠️ Observar": "#ffcc00", "🛑 Reprovada": "#ff4d4d"})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(px.scatter(df, x="Margem_Graham", y="Score", text="Ação", color="STATUS", size="DY %",
+                             color_discrete_map={"💎 BLINDADA": "#00cc66", "⚠️ Observar": "#ffcc00", "🛑 Reprovada": "#ff4d4d"}), use_container_width=True)
 
-            # Tabela
             st.dataframe(df[['Ação', 'Preço', 'DY %', 'Graham_Justo', 'Margem_Graham', 'Bazin_Teto', 'Score', 'STATUS']].style.format({
                 'Preço': 'R$ {:.2f}', 'DY %': '{:.2f}%', 'Graham_Justo': 'R$ {:.2f}', 'Margem_Graham': '{:.1f}%', 'Bazin_Teto': 'R$ {:.2f}'
             }), use_container_width=True)
-            
-            # Exportar
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Exportar Dados", data=csv, file_name='analise_blindada.csv', mime='text/csv')
 
 with tab2:
-    st.subheader("⚖️ Ajuste de Posição (Buy/Sell)")
-    st.markdown("""
-    Insira a **quantidade** de ações que você já possui e o **peso ideal** que cada uma deve ter na sua carteira. 
-    O app calculará quanto você precisa comprar ou vender com base no preço atual.
-    """)
+    st.subheader("⚖️ Planejador de Novo Aporte")
+    
+    col_input1, col_input2 = st.columns(2)
+    with col_input1:
+        novo_aporte = st.number_input("Valor do Novo Aporte (R$):", min_value=0.0, value=100.0, step=50.0)
     
     lista_rebal = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
     
-    # Criar DataFrame para edição
     if 'df_rebal' not in st.session_state:
         st.session_state.df_rebal = pd.DataFrame({
             'Ação': lista_rebal,
@@ -126,41 +118,35 @@ with tab2:
             'Peso Alvo (%)': [round(100/len(lista_rebal), 1)] * len(lista_rebal)
         })
 
-    # Editor de dados interativo
     df_usuario = st.data_editor(st.session_state.df_rebal, use_container_width=True, num_rows="dynamic")
     
-    if st.button("⚖️ Calcular Rebalanceamento"):
-        lista_dados_rebal = []
-        for t in df_usuario['Ação']:
-            d = get_data_v3(t)
-            if d: lista_dados_rebal.append({'Ação': t, 'Preço': d['Preço']})
-        
-        if lista_dados_rebal:
-            df_precos = pd.DataFrame(lista_dados_rebal)
-            df_merged = pd.merge(df_usuario, df_precos, on='Ação')
+    if st.button("⚖️ Calcular Onde Investir"):
+        with st.spinner('Processando preços atuais...'):
+            lista_dados_rebal = []
+            for t in df_usuario['Ação']:
+                d = get_data_v3(t)
+                if d: lista_dados_rebal.append({'Ação': t, 'Preço': d['Preço']})
             
-            df_merged['Valor Atual'] = df_merged['Quantidade Atual'] * df_merged['Preço']
-            patrimonio_total = df_merged['Valor Atual'].sum()
-            
-            # Se o usuário não tem nada investido ainda, simulamos um aporte de R$ 1000 para exemplo
-            if patrimonio_total == 0:
-                st.warning("⚠️ Seu patrimônio atual é R$ 0,00. Insira quantidades ou o app simulará um aporte inicial de R$ 1.000,00.")
-                patrimonio_total = 1000.0
-            
-            df_merged['Valor Alvo'] = patrimonio_total * (df_merged['Peso Alvo (%)'] / 100)
-            df_merged['Diferença (R$)'] = df_merged['Valor Alvo'] - df_merged['Valor Atual']
-            df_merged['Ação Sugerida'] = (df_merged['Diferença (R$)'] / df_merged['Preço']).apply(np.floor)
-            
-            st.metric("Patrimônio Total Analisado", f"R$ {patrimonio_total:,.2f}")
-            
-            # Mostrar resultado final formatado
-            def color_rebal(val):
-                color = '#00cc66' if val > 0 else '#ff4d4d' if val < 0 else 'white'
-                return f'color: {color}; font-weight: bold'
-
-            res_final = df_merged[['Ação', 'Preço', 'Quantidade Atual', 'Valor Atual', 'Peso Alvo (%)', 'Ação Sugerida']]
-            st.dataframe(res_final.style.format({
-                'Preço': 'R$ {:.2f}', 'Valor Atual': 'R$ {:.2f}', 'Peso Alvo (%)': '{:.1f}%'
-            }).map(color_rebal, subset=['Ação Sugerida']), use_container_width=True)
-            
-            st.success("💡 **Ação Sugerida Positiva:** Você deve COMPRAR essa quantidade. \n\n **Ação Sugerida Negativa:** Você deve VENDER essa quantidade.")
+            if lista_dados_rebal:
+                df_precos = pd.DataFrame(lista_dados_rebal)
+                df_merged = pd.merge(df_usuario, df_precos, on='Ação')
+                
+                df_merged['Valor Atual'] = df_merged['Quantidade Atual'] * df_merged['Preço']
+                patrimonio_existente = df_merged['Valor Atual'].sum()
+                patrimonio_total_novo = patrimonio_existente + novo_aporte
+                
+                df_merged['Valor Alvo'] = patrimonio_total_novo * (df_merged['Peso Alvo (%)'] / 100)
+                df_merged['Diferença (R$)'] = df_merged['Valor Alvo'] - df_merged['Valor Atual']
+                
+                # Apenas sugere compra se a diferença for positiva (usando o aporte)
+                df_merged['Comprar (Qtd)'] = (df_merged['Diferença (R$)'] / df_merged['Preço']).apply(lambda x: max(0, np.floor(x)))
+                df_merged['Total a Investir'] = df_merged['Comprar (Qtd)'] * df_merged['Preço']
+                
+                st.metric("Patrimônio Após Aporte", f"R$ {patrimonio_total_novo:,.2f}", delta=f"R$ {novo_aporte} novo")
+                
+                st.dataframe(df_merged[['Ação', 'Preço', 'Quantidade Atual', 'Peso Alvo (%)', 'Comprar (Qtd)', 'Total a Investir']].style.format({
+                    'Preço': 'R$ {:.2f}', 'Peso Alvo (%)': '{:.1f}%', 'Total a Investir': 'R$ {:.2f}'
+                }).highlight_max(subset=['Comprar (Qtd)'], color='#1e2630'), use_container_width=True)
+                
+                total_alocado = df_merged['Total a Investir'].sum()
+                st.info(f"Dos R$ {novo_aporte:.2f} informados, o sistema alocou **R$ {total_alocado:.2f}** para manter o equilíbrio da carteira.")
