@@ -3,11 +3,11 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import os
 
 # 1. Configuração de Estilo e Layout
-st.set_page_config(page_title="Rastreador Blindagem 3.0", layout="wide")
+st.set_page_config(page_title="Rastreador Blindagem 3.1", layout="wide")
 
-# CSS para melhorar o visual das tabelas
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
@@ -15,24 +15,48 @@ st.markdown("""
         background-color: #00cc66;
         color: white;
         border-radius: 5px;
-        width: 100%;
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.0")
-st.markdown("Análise de Valor (Graham), Renda (Bazin) e Saúde Financeira em tempo real.")
+st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.1")
+st.markdown("Análise de Valor, Renda e Saúde Financeira com **Sistema de Favoritos**.")
 
-# --- 2. BARRA LATERAL ---
-st.sidebar.header("⚙️ Configurações de Análise")
+# --- 2. SISTEMA DE FAVORITOS (Lógica de Ficheiro) ---
+FAVORITOS_FILE = "favoritos.txt"
+
+def carregar_favoritos():
+    if os.path.exists(FAVORITOS_FILE):
+        with open(FAVORITOS_FILE, "r") as f:
+            return f.read()
+    return "SAPR11, BBSE3, BBAS3, CMIG4, PETR4, VALE3, TAEE11, EGIE3"
+
+def salvar_favoritos(texto):
+    with open(FAVORITOS_FILE, "w") as f:
+        f.write(texto)
+    st.sidebar.success("✅ Lista de favoritos guardada!")
+
+# --- 3. BARRA LATERAL ---
+st.sidebar.header("⚙️ Configurações e Favoritos")
+
+# Carrega a lista guardada ou a padrão
+lista_inicial = carregar_favoritos()
+
 tickers_input = st.sidebar.text_area(
     "Tickers (separe por vírgula):", 
-    "SAPR11, BBSE3, BBAS3, CMIG4, PETR4, VALE3, TAEE11, EGIE3, ITSA4"
+    value=lista_inicial,
+    height=150
 )
+
+# Botão para guardar a lista atual como favorita
+if st.sidebar.button("💾 Salvar como Favoritos"):
+    salvar_favoritos(tickers_input)
+
+st.sidebar.divider()
 m_graham_min = st.sidebar.slider("Margem Graham Mínima (%)", 0, 50, 20)
 y_bazin_min = st.sidebar.slider("Yield Bazin Desejado (%)", 4, 12, 6)
 
-# --- 3. MOTOR DE INTELIGÊNCIA ---
+# --- 4. MOTOR DE INTELIGÊNCIA ---
 
 def get_data_v3(ticker):
     t_clean = ticker.strip().upper()
@@ -44,8 +68,6 @@ def get_data_v3(ticker):
         if 'currentPrice' not in info: return None
 
         preco = info.get('currentPrice', 0)
-        
-        # Correção de Dividend Yield (Evita os 1200% de erro)
         dy_raw = info.get('dividendYield', 0) or 0
         dy_corrigido = dy_raw if dy_raw < 1.0 else dy_raw / 100
         
@@ -58,12 +80,11 @@ def get_data_v3(ticker):
             "Div_Anual": preco * dy_corrigido,
             "ROE": info.get('returnOnEquity', 0) or 0,
             "Margem_Liq": info.get('profitMargins', 0) or 0,
-            "Liquidez_Corr": info.get('currentRatio', 0) or 0,
-            "Setor": info.get('sector', 'N/A')
+            "Liquidez_Corr": info.get('currentRatio', 0) or 0
         }
     except: return None
 
-# --- 4. EXECUÇÃO ---
+# --- 5. EXECUÇÃO ---
 
 if st.sidebar.button("🚀 Iniciar Rastreamento"):
     lista = [t.strip() for t in tickers_input.split(',') if t.strip()]
@@ -78,12 +99,10 @@ if st.sidebar.button("🚀 Iniciar Rastreamento"):
     if lista_dados:
         df = pd.DataFrame(lista_dados)
         
-        # Cálculos Matemáticos
         df['Graham_Justo'] = np.sqrt(np.maximum(0, 22.5 * df['LPA'] * df['VPA']))
         df['Margem_Graham'] = ((df['Graham_Justo'] - df['Preço']) / df['Graham_Justo']) * 100
         df['Bazin_Teto'] = df['Div_Anual'] / (y_bazin_min / 100)
         
-        # Score de Saúde (0-4)
         df['Score'] = (
             (df['ROE'] > 0.10).astype(int) + 
             (df['Margem_Liq'] > 0.10).astype(int) + 
@@ -101,8 +120,7 @@ if st.sidebar.button("🚀 Iniciar Rastreamento"):
         df['STATUS'] = df.apply(definir_status, axis=1)
         df = df.sort_values(by=['STATUS', 'Margem_Graham'], ascending=[True, False])
 
-        # --- INTERFACE DE RESULTADOS ---
-        
+        # Interface Visual
         st.subheader("📊 Mapa de Oportunidades")
         fig = px.scatter(
             df, x="Margem_Graham", y="Score", text="Ação", color="STATUS",
@@ -114,8 +132,6 @@ if st.sidebar.button("🚀 Iniciar Rastreamento"):
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("📋 Tabela de Dados Fundamentais")
-        
-        # Formatação para exibição
         df_view = df[['Ação', 'Preço', 'DY %', 'Graham_Justo', 'Margem_Graham', 'Bazin_Teto', 'Score', 'STATUS']].copy()
         
         st.dataframe(
@@ -127,17 +143,11 @@ if st.sidebar.button("🚀 Iniciar Rastreamento"):
             use_container_width=True
         )
 
-        # Botão de Exportação
         st.divider()
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Exportar Análise para Excel (CSV)",
-            data=csv,
-            file_name='carteira_blindada_3.0.csv',
-            mime='text/csv',
-        )
+        st.download_button(label="📥 Exportar para CSV", data=csv, file_name='analise_blindada.csv', mime='text/csv')
         
     else:
-        st.error("Nenhum dado encontrado. Verifique os tickers.")
+        st.error("Erro ao coletar dados.")
 else:
-    st.info("💡 Dica: Insira os seus tickers e clique em 'Rodar Análise' para ver o mapa de oportunidades.")
+    st.info("💡 Altere a lista na lateral e clique em 'Salvar como Favoritos' para não ter de digitar novamente.")
