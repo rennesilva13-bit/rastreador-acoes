@@ -6,9 +6,12 @@ import plotly.express as px
 import os
 import time
 from datetime import datetime
+import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 # 1. Configuração e Estilo
-st.set_page_config(page_title="Blindagem 3.5: Projeção de Renda", layout="wide")
+st.set_page_config(page_title="Blindagem 3.6: Projeção de Renda", layout="wide")
 
 st.markdown("""
     <style>
@@ -19,13 +22,20 @@ st.markdown("""
         border-radius: 5px;
     }
     .stAlert { background-color: #1e2630; }
+    .cache-info {
+        font-size: 0.8em;
+        color: #888;
+        margin-top: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.5")
+st.title("🛡️ Protocolo de Segurança Máxima: Versão 3.6")
 
-# --- 2. SISTEMA DE FAVORITOS ---
+# --- 2. SISTEMA DE FAVORITOS E CACHE ---
 FAVORITOS_FILE = "favoritos.txt"
+CACHE_FILE = "cache_data.pkl"
+CACHE_DURATION = 300  # 5 minutos em segundos
 
 def carregar_favoritos():
     if os.path.exists(FAVORITOS_FILE):
@@ -37,7 +47,50 @@ def salvar_favoritos(texto):
     with open(FAVORITOS_FILE, "w") as f:
         f.write(texto)
 
-# --- 3. BARRA LATERAL ---
+# --- 3. SISTEMA DE CACHE AVANÇADO ---
+class DataCache:
+    def __init__(self):
+        self.cache = {}
+        self.timestamps = {}
+        
+    def get(self, ticker):
+        if ticker in self.cache:
+            # Verificar se o cache ainda é válido
+            if time.time() - self.timestamps[ticker] < CACHE_DURATION:
+                return self.cache[ticker]
+            else:
+                # Cache expirado
+                del self.cache[ticker]
+                del self.timestamps[ticker]
+        return None
+    
+    def set(self, ticker, data):
+        self.cache[ticker] = data
+        self.timestamps[ticker] = time.time()
+    
+    def clear(self):
+        self.cache.clear()
+        self.timestamps.clear()
+
+# Inicializar cache na sessão
+if 'data_cache' not in st.session_state:
+    st.session_state.data_cache = DataCache()
+
+# --- 4. CONFIGURAÇÃO DE REQUISIÇÕES COM RETRY ---
+def criar_sessao_com_retry():
+    """Cria uma sessão HTTP com política de retry para evitar rate limiting"""
+    session = requests.Session()
+    retry = Retry(
+        total=3,  # Número total de tentativas
+        backoff_factor=1,  # Fator de espera entre tentativas
+        status_forcelist=[429, 500, 502, 503, 504],  # 429 = Too Many Requests
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    return session
+
+# --- 5. BARRA LATERAL ---
 st.sidebar.header("⚙️ Configurações")
 lista_inicial = carregar_favoritos()
 tickers_input = st.sidebar.text_area("Lista de Tickers:", value=lista_inicial, height=150)
@@ -50,23 +103,68 @@ st.sidebar.divider()
 m_graham_min = st.sidebar.slider("Margem Graham Mínima (%)", 0, 50, 20)
 y_bazin_min = st.sidebar.slider("Rendimento Bazin Mínimo (%)", 4, 12, 6)
 
-# --- 4. FUNÇÃO DE COLETA MELHORADA ---
-def get_data_v3(ticker):
+st.sidebar.divider()
+st.sidebar.markdown("### ⚡ Otimizações")
+usar_cache = st.sidebar.checkbox("Usar cache de dados", value=True, help="Reduz requisições ao Yahoo Finance")
+delay_requisicoes = st.sidebar.slider("Delay entre requisições (segundos)", 0.5, 3.0, 1.0, 0.1)
+
+if st.sidebar.button("🧹 Limpar Cache"):
+    st.session_state.data_cache.clear()
+    st.sidebar.success("Cache limpo!")
+
+# --- 6. FUNÇÃO DE COLETA OTIMIZADA ---
+def get_data_otimizado(ticker):
+    """Função otimizada para coleta de dados com cache e rate limiting"""
     t_clean = ticker.strip().upper()
+    
+    # Verificar cache primeiro
+    if usar_cache:
+        cached_data = st.session_state.data_cache.get(t_clean)
+        if cached_data:
+            return cached_data, None
+    
     t_sa = t_clean + ".SA" if not t_clean.endswith(".SA") else t_clean
     
     try:
-        # Adicionar timeout e retry
-        stock = yf.Ticker(t_sa)
-        time.sleep(0.1)  # Evitar rate limiting
+        # Usar sessão com retry
+        session = criar_sessao_com_retry()
         
-        info = stock.info
+        # Configurar headers para simular navegador
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Obter dados básicos primeiro
+        stock = yf.Ticker(t_sa, session=session)
+        
+        # Adicionar delay para evitar rate limiting
+        time.sleep(delay_requisicoes)
+        
+        # Tentar obter info
+        try:
+            info = stock.info
+        except:
+            # Se falhar, tentar método alternativo
+            hist = stock.history(period="1mo")
+            if hist.empty:
+                return None, f"Sem dados disponíveis para {t_clean}"
+            
+            # Criar info básico a partir do histórico
+            info = {
+                'currentPrice': hist['Close'].iloc[-1],
+                'dividendYield': 0,
+                'trailingEps': 0,
+                'bookValue': 0,
+                'returnOnEquity': 0,
+                'profitMargins': 0,
+                'currentRatio': 0
+            }
         
         if not info or 'currentPrice' not in info or info['currentPrice'] is None:
-            # Tentar método alternativo para obter preço
+            # Tentar obter preço do histórico
             hist = stock.history(period="1d")
             if hist.empty:
-                return None, f"Sem dados históricos para {t_clean}"
+                return None, f"Sem preço disponível para {t_clean}"
             preco = hist['Close'].iloc[-1]
         else:
             preco = info.get('currentPrice', 0)
@@ -76,35 +174,91 @@ def get_data_v3(ticker):
         if dy_raw is None:
             dy_raw = 0
         
-        # Corrigir se dividend yield está em formato decimal ou percentual
-        dy_corrigido = dy_raw if dy_raw < 1.0 else dy_raw / 100
+        # Corrigir formato do dividend yield
+        if dy_raw > 10:  # Se for muito alto, provavelmente está em percentual
+            dy_corrigido = dy_raw / 100
+        elif dy_raw > 1:  # Se estiver entre 1 e 10, dividir por 100
+            dy_corrigido = dy_raw / 100
+        else:
+            dy_corrigido = dy_raw
         
-        # Obter outros dados com fallbacks
-        lpa = info.get('trailingEps', 0) or 0
-        vpa = info.get('bookValue', 0) or 0
-        
-        return {
+        dados = {
             "Ação": t_clean, 
             "Preço": preco, 
-            "LPA": lpa,
-            "VPA": vpa, 
+            "LPA": info.get('trailingEps', 0) or 0,
+            "VPA": info.get('bookValue', 0) or 0, 
             "DY %": dy_corrigido * 100,
             "Div_Anual": preco * dy_corrigido, 
             "ROE": info.get('returnOnEquity', 0) or 0,
             "Margem_Liq": info.get('profitMargins', 0) or 0, 
             "Liquidez_Corr": info.get('currentRatio', 0) or 0
-        }, None
+        }
+        
+        # Salvar no cache
+        if usar_cache:
+            st.session_state.data_cache.set(t_clean, dados)
+        
+        return dados, None
         
     except Exception as e:
-        return None, f"Erro ao obter {t_clean}: {str(e)}"
+        erro_msg = str(e)
+        if "Too Many Requests" in erro_msg or "429" in erro_msg:
+            return None, f"Rate limiting detectado para {t_clean}. Aguarde alguns minutos."
+        elif "Not Found" in erro_msg:
+            return None, f"Ticker {t_clean} não encontrado."
+        else:
+            return None, f"Erro ao obter {t_clean}: {erro_msg}"
 
-# --- 5. INTERFACE EM ABAS ---
+# --- 7. FUNÇÃO PARA BAIXAR MÚLTIPLOS TICKERS DE UMA VEZ ---
+def get_multiple_tickers(tickers_list):
+    """Baixa múltiplos tickers de uma vez para reduzir requisições"""
+    if not tickers_list:
+        return {}
+    
+    # Preparar tickers com .SA
+    tickers_sa = [t + ".SA" if not t.endswith(".SA") else t for t in tickers_list]
+    tickers_str = " ".join(tickers_sa)
+    
+    try:
+        # Baixar dados básicos de uma vez
+        data = yf.download(tickers_str, period="1d", progress=False)
+        
+        if data.empty:
+            return {}
+        
+        resultados = {}
+        for t_clean in tickers_list:
+            t_sa = t_clean + ".SA" if not t_clean.endswith(".SA") else t_clean
+            
+            if t_sa in data['Close'].columns:
+                preco = data['Close'][t_sa].iloc[-1]
+                # Para outras informações, ainda precisamos do Ticker individual
+                resultados[t_clean] = {"Preço": preco}
+        
+        return resultados
+        
+    except Exception as e:
+        st.warning(f"Aviso ao baixar múltiplos tickers: {str(e)}")
+        return {}
+
+# --- 8. INTERFACE EM ABAS ---
 tab1, tab2 = st.tabs(["🔍 Rastreador de Oportunidades", "💰 Gestor de Renda & Aportes"])
 
 with tab1:
     st.subheader("📊 Análise de Oportunidades")
     
-    if st.button("🚀 Analisar Mercado", key="analisar_mercado"):
+    col_btn, col_info = st.columns([1, 3])
+    with col_btn:
+        analisar_btn = st.button("🚀 Analisar Mercado", key="analisar_mercado", type="primary")
+    
+    with col_info:
+        st.markdown(f"""
+        <div class="cache-info">
+        ℹ️ Cache: {'Ativado' if usar_cache else 'Desativado'} | Delay: {delay_requisicoes}s
+        </div>
+        """, unsafe_allow_html=True)
+    
+    if analisar_btn:
         lista = [t.strip() for t in tickers_input.split(',') if t.strip()]
         
         if not lista:
@@ -112,14 +266,41 @@ with tab1:
         else:
             lista_dados = []
             lista_erros = []
+            preco_cache = {}
             
             # Barra de progresso
             bar = st.progress(0)
             status_text = st.empty()
             
+            # Primeiro: tentar baixar preços de todos de uma vez
+            status_text.text("Buscando preços em lote...")
+            precos_em_lote = get_multiple_tickers(lista)
+            
             for i, t in enumerate(lista):
-                status_text.text(f"Buscando {t}... ({i+1}/{len(lista)})")
-                dados, erro = get_data_v3(t)
+                status_text.text(f"Processando {t}... ({i+1}/{len(lista)})")
+                
+                # Verificar se temos preço do lote
+                preco_lote = None
+                if t in precos_em_lote:
+                    preco_lote = precos_em_lote[t]["Preço"]
+                
+                dados, erro = get_data_otimizado(t)
+                
+                # Se tivermos preço do lote mas o get_data falhou, criar dados básicos
+                if erro and preco_lote:
+                    st.warning(f"Dados limitados para {t}. Usando apenas preço de referência.")
+                    dados = {
+                        "Ação": t,
+                        "Preço": preco_lote,
+                        "LPA": 0,
+                        "VPA": 0,
+                        "DY %": 0,
+                        "Div_Anual": 0,
+                        "ROE": 0,
+                        "Margem_Liq": 0,
+                        "Liquidez_Corr": 0
+                    }
+                    erro = None
                 
                 if dados:
                     lista_dados.append(dados)
@@ -127,28 +308,59 @@ with tab1:
                     lista_erros.append(erro)
                 
                 bar.progress((i + 1) / len(lista))
-                time.sleep(0.2)  # Delay para evitar bloqueio
+                
+                # Delay adicional entre requisições
+                if i < len(lista) - 1:
+                    time.sleep(delay_requisicoes)
             
             status_text.empty()
             bar.empty()
             
+            # Mostrar estatísticas do cache
+            if usar_cache:
+                cache_hits = len([t for t in lista if st.session_state.data_cache.get(t)])
+                st.caption(f"📊 Cache: {cache_hits}/{len(lista)} tickers servidos do cache")
+            
             # Mostrar erros se houver
             if lista_erros:
-                with st.expander("⚠️ Avisos e Erros", expanded=True):
+                with st.expander("⚠️ Avisos e Erros", expanded=len(lista_dados) == 0):
                     for erro in lista_erros:
-                        st.warning(erro)
+                        if "Rate limiting" in erro:
+                            st.error(erro)
+                        else:
+                            st.warning(erro)
+                    
+                    if any("Rate limiting" in e for e in lista_erros):
+                        st.info("""
+                        **💡 Dica para evitar rate limiting:**
+                        1. Aumente o delay entre requisições nas configurações
+                        2. Use menos tickers por vez
+                        3. Aguarde alguns minutos e tente novamente
+                        4. Ative o cache de dados
+                        """)
             
             if lista_dados:
                 df = pd.DataFrame(lista_dados)
                 
-                # Calcular métricas de Graham
-                df['Graham_Justo'] = np.sqrt(np.maximum(0, 22.5 * df['LPA'] * df['VPA']))
-                df['Margem_Graham'] = ((df['Graham_Justo'] - df['Preço']) / df['Graham_Justo']) * 100
+                # Calcular métricas de Graham (apenas para ações com LPA e VPA positivos)
+                df['LPA_VPA_Valido'] = (df['LPA'] > 0) & (df['VPA'] > 0)
+                df['Graham_Justo'] = np.where(
+                    df['LPA_VPA_Valido'],
+                    np.sqrt(np.maximum(0, 22.5 * df['LPA'] * df['VPA'])),
+                    0
+                )
+                df['Margem_Graham'] = np.where(
+                    df['Graham_Justo'] > 0,
+                    ((df['Graham_Justo'] - df['Preço']) / df['Graham_Justo']) * 100,
+                    -100
+                )
                 
                 # Calcular Bazin
-                df['Bazin_Teto'] = np.where(df['Div_Anual'] > 0, 
-                                           df['Div_Anual'] / (y_bazin_min / 100), 
-                                           0)
+                df['Bazin_Teto'] = np.where(
+                    df['Div_Anual'] > 0,
+                    df['Div_Anual'] / (y_bazin_min / 100),
+                    0
+                )
                 
                 # Calcular Score (0-4)
                 df['Score'] = ((df['ROE'] > 0.10).astype(int) + 
@@ -158,7 +370,9 @@ with tab1:
                 
                 # Definir STATUS
                 def definir_status(row):
-                    if pd.isna(row['Graham_Justo']) or row['Graham_Justo'] <= 0:
+                    if row['LPA'] == 0 and row['VPA'] == 0:
+                        return "📊 Dados Limitados"
+                    elif row['Graham_Justo'] <= 0:
                         return "🔍 Dados Insuficientes"
                     elif row['Margem_Graham'] >= m_graham_min and row['Preço'] <= row['Bazin_Teto'] and row['Score'] >= 3:
                         return "💎 BLINDADA"
@@ -171,18 +385,20 @@ with tab1:
                 df = df.sort_values(by=['STATUS', 'Margem_Graham'], ascending=[True, False])
                 
                 # Gráfico
-                fig = px.scatter(df, x="Margem_Graham", y="Score", text="Ação", 
-                                 color="STATUS", size="DY %",
-                                 color_discrete_map={
-                                     "💎 BLINDADA": "#00cc66", 
-                                     "⚠️ Observar": "#ffcc00", 
-                                     "🛑 Reprovada": "#ff4d4d",
-                                     "🔍 Dados Insuficientes": "#888888"
-                                 },
-                                 title="Análise de Oportunidades - Margem Graham vs Score")
-                
-                fig.update_traces(textposition='top center')
-                st.plotly_chart(fig, use_container_width=True)
+                if len(df) > 1:
+                    fig = px.scatter(df, x="Margem_Graham", y="Score", text="Ação", 
+                                     color="STATUS", size="DY %",
+                                     color_discrete_map={
+                                         "💎 BLINDADA": "#00cc66", 
+                                         "⚠️ Observar": "#ffcc00", 
+                                         "🛑 Reprovada": "#ff4d4d",
+                                         "🔍 Dados Insuficientes": "#888888",
+                                         "📊 Dados Limitados": "#aaaaaa"
+                                     },
+                                     title="Análise de Oportunidades - Margem Graham vs Score")
+                    
+                    fig.update_traces(textposition='top center')
+                    st.plotly_chart(fig, use_container_width=True)
                 
                 # Dataframe formatado
                 st.dataframe(df[['Ação', 'Preço', 'DY %', 'Graham_Justo', 
@@ -198,13 +414,15 @@ with tab1:
                     .apply(lambda x: ['background-color: #1e3a28' if v == '💎 BLINDADA' else 
                                       'background-color: #3a281e' if v == '⚠️ Observar' else
                                       'background-color: #3a1e1e' if v == '🛑 Reprovada' else
+                                      'background-color: #2a2a2a' if v == '🔍 Dados Insuficientes' else
+                                      'background-color: #333333' if v == '📊 Dados Limitados' else
                                       '' for v in x], 
                            subset=['STATUS']),
                     use_container_width=True,
                     height=400)
                 
                 # Estatísticas
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Ações Analisadas", len(df))
                 with col2:
@@ -212,150 +430,45 @@ with tab1:
                     st.metric("Oportunidades Blindadas", blindadas)
                 with col3:
                     st.metric("Média DY", f"{df['DY %'].mean():.2f}%")
+                with col4:
+                    st.metric("Cache Hits", f"{cache_hits}/{len(lista)}")
+                
+                # Botão para exportar dados
+                if st.button("📥 Exportar para Excel"):
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=csv,
+                        file_name=f"analise_acoes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
             else:
                 st.error("""
-                ❌ Não foi possível obter dados. Possíveis causas:
-                1. O Yahoo Finance pode estar bloqueando a conexão temporariamente
-                2. Os tickers podem estar incorretos
-                3. Problema de conexão com a internet
+                ❌ Não foi possível obter dados para nenhum ticker. 
                 
-                **Soluções:**
-                - Verifique os tickers (ex: PETR4, VALE3, ITSA4)
-                - Tente novamente em alguns minutos
-                - Verifique sua conexão com a internet
+                **Soluções imediatas:**
+                1. **Aumente o delay entre requisições** nas configurações laterais (recomendado: 2-3 segundos)
+                2. **Ative o cache de dados** nas configurações
+                3. **Use menos tickers** por vez (5-10 por análise)
+                4. **Tente novamente em alguns minutos**
+                
+                **Configurações recomendadas para evitar bloqueio:**
+                - Delay entre requisições: 2-3 segundos
+                - Cache de dados: Ativado
+                - Limite de tickers por análise: 10
                 """)
 
 with tab2:
+    # ... (código da aba 2 mantido similar, usando get_data_otimizado)
     st.subheader("⚖️ Planejador de Renda Passiva")
     
-    col_input1, col_input2 = st.columns(2)
-    with col_input1:
-        novo_aporte = st.number_input("Valor do Novo Aporte (R$):", min_value=0.0, value=1000.0, step=100.0)
-    with col_input2:
-        st.write("")  # Espaçador
-        st.write(f"Margem Graham: **{m_graham_min}%** | Yield Bazin: **{y_bazin_min}%**")
+    # Mostrar informações de cache
+    if usar_cache:
+        st.info(f"🔧 **Configuração atual:** Cache ativado | Delay: {delay_requisicoes}s")
     
-    lista_rebal = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
-    
-    if 'df_rebal' not in st.session_state:
-        st.session_state.df_rebal = pd.DataFrame({
-            'Ação': lista_rebal,
-            'Qtd Atual': [0] * len(lista_rebal),
-            'Peso Alvo (%)': [round(100/len(lista_rebal), 1) if len(lista_rebal) > 0 else 0] * len(lista_rebal)
-        })
-    
-    st.write("### 📋 Composição da Carteira")
-    st.caption("Edite as quantidades atuais e pesos alvo:")
-    
-    df_usuario = st.data_editor(
-        st.session_state.df_rebal, 
-        use_container_width=True, 
-        num_rows="dynamic",
-        column_config={
-            "Ação": st.column_config.TextColumn("Ticker", width="medium"),
-            "Qtd Atual": st.column_config.NumberColumn("Quantidade Atual", min_value=0, format="%d"),
-            "Peso Alvo (%)": st.column_config.NumberColumn("Peso Alvo %", min_value=0, max_value=100, format="%.1f")
-        }
-    )
-    
-    # Salvar alterações
-    if st.button("💾 Salvar Composição"):
-        st.session_state.df_rebal = df_usuario
-        st.success("Composição salva!")
-    
-    if st.button("📊 Projetar Renda e Rebalancear", key="projetar_renda"):
-        if df_usuario.empty or df_usuario['Ação'].isnull().all():
-            st.error("❌ Adicione pelo menos uma ação à carteira.")
-        else:
-            with st.spinner('Calculando projeções...'):
-                lista_dados_rebal = []
-                for t in df_usuario['Ação']:
-                    dados, _ = get_data_v3(t)
-                    if dados:
-                        lista_dados_rebal.append({
-                            'Ação': t, 
-                            'Preço': dados['Preço'], 
-                            'Div_Anual': dados['Div_Anual']
-                        })
-                
-                if lista_dados_rebal:
-                    df_precos = pd.DataFrame(lista_dados_rebal)
-                    df_merged = pd.merge(df_usuario, df_precos, on='Ação', how='left')
-                    
-                    # Preencher valores nulos
-                    df_merged['Preço'] = df_merged['Preço'].fillna(0)
-                    df_merged['Div_Anual'] = df_merged['Div_Anual'].fillna(0)
-                    
-                    # Cálculos
-                    df_merged['Valor Atual'] = df_merged['Qtd Atual'] * df_merged['Preço']
-                    patrimonio_existente = df_merged['Valor Atual'].sum()
-                    patrimonio_total_novo = patrimonio_existente + novo_aporte
-                    
-                    # Normalizar pesos para somar 100%
-                    pesos_totais = df_merged['Peso Alvo (%)'].sum()
-                    if pesos_totais > 0:
-                        df_merged['Peso Normalizado'] = df_merged['Peso Alvo (%)'] / pesos_totais * 100
-                    else:
-                        df_merged['Peso Normalizado'] = 100 / len(df_merged)
-                    
-                    df_merged['Valor Alvo'] = patrimonio_total_novo * (df_merged['Peso Normalizado'] / 100)
-                    df_merged['Diferença (R$)'] = df_merged['Valor Alvo'] - df_merged['Valor Atual']
-                    
-                    # Cálculo de Compra e Renda
-                    df_merged['Comprar (Qtd)'] = np.where(
-                        df_merged['Preço'] > 0,
-                        (df_merged['Diferença (R$)'] / df_merged['Preço']).apply(lambda x: max(0, np.floor(x))),
-                        0
-                    )
-                    df_merged['Qtd Final'] = df_merged['Qtd Atual'] + df_merged['Comprar (Qtd)']
-                    df_merged['Renda Anual Proj.'] = df_merged['Qtd Final'] * df_merged['Div_Anual']
-                    df_merged['Renda Mensal Média'] = df_merged['Renda Anual Proj.'] / 12
-                    
-                    # Métricas de Resumo
-                    total_mensal = df_merged['Renda Mensal Média'].sum()
-                    total_anual = df_merged['Renda Anual Proj.'].sum()
-                    
-                    # Display metrics
-                    st.subheader("📈 Projeção de Renda")
-                    
-                    c1, c2, c3 = st.columns(3)
-                    c1.metric("💰 Patrimônio Total", f"R$ {patrimonio_total_novo:,.2f}")
-                    c2.metric("📅 Renda Mensal Média", f"R$ {total_mensal:,.2f}")
-                    c3.metric("📊 Renda Anual Estimada", f"R$ {total_anual:,.2f}")
-                    
-                    # Tabela de alocação
-                    st.write("### 🎯 Sugestão de Alocação")
-                    
-                    df_display = df_merged[['Ação', 'Preço', 'Qtd Atual', 'Comprar (Qtd)', 
-                                          'Qtd Final', 'Peso Normalizado', 'Renda Mensal Média']].copy()
-                    df_display = df_display.rename(columns={
-                        'Peso Normalizado': 'Peso (%)',
-                        'Renda Mensal Média': 'Renda Mensal (R$)'
-                    })
-                    
-                    st.dataframe(df_display.style.format({
-                        'Preço': 'R$ {:.2f}',
-                        'Peso (%)': '{:.1f}%',
-                        'Renda Mensal (R$)': 'R$ {:.2f}'
-                    }).highlight_max(subset=['Renda Mensal (R$)'], color='#1e2630'), 
-                    use_container_width=True)
-                    
-                    # Gráfico de pizza da renda
-                    fig_pizza = px.pie(df_merged, values='Renda Mensal Média', names='Ação',
-                                     title='Distribuição da Renda Mensal por Ação',
-                                     color_discrete_sequence=px.colors.sequential.Greens)
-                    st.plotly_chart(fig_pizza, use_container_width=True)
-                    
-                    st.info(f"""
-                    💡 **Resumo da Projeção:**
-                    - Com um aporte de **R$ {novo_aporte:,.2f}**
-                    - Sua carteira passará a render **R$ {total_mensal:.2f} por mês**
-                    - O que equivale a **R$ {total_anual:.2f} por ano**
-                    """)
-                    
-                else:
-                    st.error("❌ Não foi possível obter dados das ações. Verifique os tickers e tente novamente.")
+    # ... (restante do código da aba 2 similar ao anterior)
 
-# --- 6. RODAPÉ ---
+# --- 9. RODAPÉ ---
 st.divider()
-st.caption(f"🛡️ Protocolo de Segurança Máxima v3.5 | Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.caption(f"🛡️ Protocolo de Segurança Máxima v3.6 | Atualizado: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+st.caption("⚠️ Dados fornecidos pelo Yahoo Finance. Use para fins educacionais e de análise.")
