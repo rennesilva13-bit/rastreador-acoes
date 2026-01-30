@@ -5,10 +5,11 @@ import numpy as np
 import plotly.express as px
 import os
 import time
+import random  # Necessário para o sistema anti-bloqueio
 from datetime import datetime
 import warnings
 
-# Ignorar avisos desnecessários
+# Ignorar avisos desnecessários do pandas/yfinance
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -20,7 +21,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado
+# CSS personalizado (Visual Dark Mode Profissional)
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
@@ -46,8 +47,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ Blindagem Financeira Pro 4.6")
-st.caption("Sistema avançado de análise fundamentalista - Yahoo Finance (Correção API)")
+st.title("🛡️ Blindagem Financeira Pro 4.7")
+st.caption("Sistema avançado de análise fundamentalista - Yahoo Finance (Anti-Bloqueio)")
 
 # ============================================================================
 # 2. SISTEMA DE FAVORITOS
@@ -104,82 +105,98 @@ st.sidebar.divider()
 st.sidebar.subheader("⚡ Performance")
 
 usar_cache = st.sidebar.checkbox("Usar cache (15 min)", value=True)
-delay_requisicoes = st.sidebar.slider("Delay (segundos)", 0.5, 5.0, 1.0)
+delay_requisicoes = st.sidebar.slider("Delay Inicial (segundos)", 0.5, 5.0, 1.0)
 
 if st.sidebar.button("🧹 Limpar Cache", use_container_width=True):
     st.cache_data.clear()
     st.sidebar.success("Cache limpo!")
 
 # ============================================================================
-# 4. DATA FETCHING (FUNÇÃO CORRIGIDA)
+# 4. DATA FETCHING (COM SISTEMA ANTI-BLOQUEIO)
 # ============================================================================
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_yahoo_data_cached(ticker):
     """
-    Função otimizada: Deixa o yfinance gerenciar a sessão automaticamente
-    Resolve o erro 'Yahoo API requires curl_cffi session'
+    Função robusta com Retry Logic (Tenta novamente se for bloqueado)
     """
-    # Limpeza do ticker
     ticker_clean = ticker.strip().upper().replace('.SA', '')
     yahoo_ticker = f"{ticker_clean}.SA"
     
-    try:
-        # --- CORREÇÃO PRINCIPAL: Sem sessão manual ---
-        acao = yf.Ticker(yahoo_ticker)
-        
-        # 1. Tenta pegar Preço (Estratégia Rápida)
-        preco_atual = 0.0
+    # Número máximo de tentativas se der erro de Rate Limit
+    MAX_RETRIES = 3
+    
+    for tentativa in range(MAX_RETRIES):
         try:
-            # Tenta fast_info primeiro (muito mais rápido)
-            if hasattr(acao, 'fast_info'):
-                last_price = acao.fast_info.get('last_price')
-                if last_price and last_price > 0:
-                    preco_atual = last_price
+            acao = yf.Ticker(yahoo_ticker)
             
-            # Se falhar ou for zero, tenta histórico (mais lento, mas garantido)
+            # 1. Tenta pegar Preço (Estratégia Híbrida)
+            preco_atual = 0.0
+            
+            # Tenta fast_info primeiro (muito mais leve para a API)
+            if hasattr(acao, 'fast_info'):
+                try:
+                    p = acao.fast_info.last_price
+                    if p and p > 0:
+                        preco_atual = p
+                except:
+                    pass
+            
+            # Se fast_info falhar, tenta histórico
             if preco_atual <= 0:
                 hist = acao.history(period="1d")
                 if not hist.empty:
                     preco_atual = hist['Close'].iloc[-1]
-        except:
-            pass
             
-        if preco_atual <= 0:
-            return None, "Preço não disponível"
+            # Se não conseguiu preço, aborta para economizar requisições
+            if preco_atual <= 0:
+                return None, "Preço inacessível"
 
-        # 2. Tenta pegar Fundamentos
-        try:
+            # 2. Tenta pegar Fundamentos (Onde ocorre o bloqueio 429)
             info = acao.info
+            
+            if not info:
+                 # Força um erro para cair no except e tentar de novo se necessário
+                 raise ValueError("Info vazia")
+
+            # 3. Processamento dos dados (Sucesso!)
+            dy_val = info.get('dividendYield', 0)
+            dividend_yield = (dy_val * 100) if dy_val and dy_val < 1 else (dy_val if dy_val else 0)
+
+            dados = {
+                "Ação": ticker_clean,
+                "Preço": float(preco_atual),
+                "DY %": float(dividend_yield),
+                "LPA": float(info.get('trailingEps', 0) or 0),
+                "VPA": float(info.get('bookValue', 0) or 0),
+                "ROE": float(info.get('returnOnEquity', 0) or 0),
+                "Margem_Liq": float(info.get('profitMargins', 0) or 0),
+                "Liquidez_Corr": float(info.get('currentRatio', 0) or 0),
+            }
+            
+            dados["Div_Anual"] = dados["Preço"] * (dados["DY %"] / 100)
+            
+            return dados, None # Retorna sucesso e sai do loop
+
         except Exception as e:
-            # Captura erro específico do Yahoo se houver
-            return None, f"Erro nos fundamentos: {str(e)[:50]}..."
-
-        if not info:
-             return None, "Informações fundamentais vazias"
-
-        # 3. Processamento dos dados
-        dy_val = info.get('dividendYield', 0)
-        # Corrige DY se vier em decimal (0.06) ou percentual (6.0)
-        dividend_yield = (dy_val * 100) if dy_val and dy_val < 1 else (dy_val if dy_val else 0)
-
-        dados = {
-            "Ação": ticker_clean,
-            "Preço": float(preco_atual),
-            "DY %": float(dividend_yield),
-            "LPA": float(info.get('trailingEps', 0) or 0),
-            "VPA": float(info.get('bookValue', 0) or 0),
-            "ROE": float(info.get('returnOnEquity', 0) or 0),
-            "Margem_Liq": float(info.get('profitMargins', 0) or 0),
-            "Liquidez_Corr": float(info.get('currentRatio', 0) or 0),
-        }
-        
-        dados["Div_Anual"] = dados["Preço"] * (dados["DY %"] / 100)
-        
-        return dados, None
-
-    except Exception as e:
-        return None, f"Erro genérico: {str(e)}"
+            error_msg = str(e)
+            
+            # Verifica se é erro de bloqueio (429 ou Rate Limited)
+            is_rate_limit = "429" in error_msg or "Too Many Requests" in error_msg or "Rate limited" in error_msg
+            
+            if is_rate_limit:
+                if tentativa < MAX_RETRIES - 1:
+                    # Espera exponencial + aleatória (2s, 5s, 8s...)
+                    wait_time = random.uniform(2, 4) + (tentativa * 3)
+                    time.sleep(wait_time)
+                    continue # Tenta novamente
+                else:
+                    return None, "Bloqueio temporário do Yahoo (Muitas requisições)"
+            else:
+                # Se for outro erro (ex: ticker errado), não adianta tentar de novo
+                return None, f"Erro: {error_msg[:50]}"
+    
+    return None, "Falha na conexão após tentativas"
 
 # Wrapper para respeitar a opção de "Não usar cache" da sidebar
 def get_yahoo_data(ticker):
@@ -244,10 +261,10 @@ with tab_analise:
         if not tickers_lista:
             st.error("❌ Adicione tickers na lista lateral.")
         else:
-            # Limite de segurança para evitar lentidão
-            MAX_TICKERS = 15
+            # Limite de segurança
+            MAX_TICKERS = 12
             if len(tickers_lista) > MAX_TICKERS:
-                st.warning(f"⚠️ Limitando a {MAX_TICKERS} tickers para otimizar a conexão.")
+                st.warning(f"⚠️ Limitando a {MAX_TICKERS} tickers para evitar bloqueio.")
                 tickers_lista = tickers_lista[:MAX_TICKERS]
 
             progress_bar = st.progress(0)
@@ -259,7 +276,7 @@ with tab_analise:
             for i, ticker in enumerate(tickers_lista):
                 status_text.text(f"📡 Buscando dados de {ticker}...")
                 
-                # Pequeno delay para respeitar a API
+                # Delay configurável
                 time.sleep(delay_requisicoes)
                 
                 dados, erro = get_yahoo_data(ticker)
@@ -277,10 +294,9 @@ with tab_analise:
             if dados_coletados:
                 df = pd.DataFrame(dados_coletados)
                 
-                # Aplicar Cálculos
+                # Cálculos
                 df['Graham_Justo'] = df.apply(lambda x: calcular_preco_justo_graham(x['LPA'], x['VPA']), axis=1)
                 
-                # Margem Graham (%)
                 df['Margem_Graham'] = df.apply(
                     lambda x: ((x['Graham_Justo'] - x['Preço']) / x['Graham_Justo']) * 100 
                     if x['Graham_Justo'] > 0 else 0, axis=1
@@ -290,17 +306,16 @@ with tab_analise:
                 df['Score'] = df.apply(calcular_score_fundamentalista, axis=1)
                 df['Status'] = df.apply(lambda x: classificar_acao(x, m_graham_min), axis=1)
                 
-                # Ordenação: Blindadas primeiro, depois por maior margem
                 df = df.sort_values(by=['Status', 'Margem_Graham'], ascending=[True, False])
                 
-                # Exibir KPIs
+                # KPIs
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Analisados", len(df))
                 c2.metric("Oportunidades 💎", len(df[df['Status'] == '💎 BLINDADA']))
                 c3.metric("DY Médio", f"{df['DY %'].mean():.2f}%")
                 c4.metric("Margem Média", f"{df['Margem_Graham'].mean():.1f}%")
                 
-                # Gráfico de Dispersão
+                # Gráfico
                 if len(df[df['Graham_Justo'] > 0]) >= 2:
                     st.subheader("📈 Mapa de Oportunidades")
                     fig = px.scatter(
@@ -312,17 +327,14 @@ with tab_analise:
                     fig.update_layout(
                         plot_bgcolor='rgba(0,0,0,0)', 
                         paper_bgcolor='rgba(0,0,0,0)', 
-                        font=dict(color='white'),
-                        xaxis_title="Margem de Segurança Graham (%)",
-                        yaxis_title="Score Fundamentalista (0-5)"
+                        font=dict(color='white')
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 
-                # Tabela Visual Formatada
+                # Tabela
                 st.subheader("📋 Detalhes Financeiros")
                 df_show = df[['Ação', 'Preço', 'DY %', 'Graham_Justo', 'Margem_Graham', 'Bazin_Teto', 'Score', 'Status']].copy()
                 
-                # Formatação R$ e %
                 for col in ['Preço', 'Graham_Justo', 'Bazin_Teto']:
                     df_show[col] = df_show[col].apply(lambda x: f"R$ {x:,.2f}")
                 
@@ -331,13 +343,11 @@ with tab_analise:
                 
                 st.dataframe(df_show, use_container_width=True, height=400)
                 
-                # Botão Download
                 csv = df.to_csv(index=False, sep=';', decimal=',')
-                st.download_button("📥 Baixar Planilha (.csv)", csv, "analise_blindagem.csv", "text/csv")
+                st.download_button("📥 Baixar CSV", csv, "analise_blindagem.csv", "text/csv")
             
-            # Exibir erros se houver
             if erros_coletados:
-                with st.expander("⚠️ Log de Erros (Tickers não encontrados)"):
+                with st.expander("⚠️ Log de Erros (Aguarde alguns minutos se for bloqueio)"):
                     for e in erros_coletados: st.warning(e)
 
 # --- ABA 2: SIMULADOR ---
@@ -346,19 +356,18 @@ with tab_simulador:
     
     col_val, col_est = st.columns(2)
     valor_aporte = col_val.number_input("Valor do Aporte (R$)", min_value=100.0, value=5000.0, step=500.0)
-    estrategia = col_est.selectbox("Estratégia de Alocação", ["Igualitária", "Por Dividend Yield"])
+    estrategia = col_est.selectbox("Estratégia", ["Igualitária", "Por Dividend Yield"])
     
     tickers_disp = [t.strip() for t in tickers_input.split(',') if t.strip()]
     
     if not tickers_disp:
-        st.info("Preencha a lista de tickers na barra lateral para usar o simulador.")
+        st.info("Preencha a lista de tickers na barra lateral.")
     else:
-        selecionadas = st.multiselect("Selecione as ações para a carteira:", tickers_disp, default=tickers_disp[:min(5, len(tickers_disp))])
+        selecionadas = st.multiselect("Selecione as ações:", tickers_disp, default=tickers_disp[:min(5, len(tickers_disp))])
         
         if st.button("🎯 Calcular Projeção") and selecionadas:
-            with st.spinner("Calculando projeções..."):
+            with st.spinner("Calculando..."):
                 dados_sim = []
-                # Reutiliza a função de busca (com cache)
                 for t in selecionadas:
                     d, _ = get_yahoo_data(t)
                     if d: dados_sim.append(d)
@@ -366,21 +375,18 @@ with tab_simulador:
                 if dados_sim:
                     df_sim = pd.DataFrame(dados_sim)
                     
-                    # Define peso de cada ação
                     if estrategia == "Igualitária":
                         df_sim['Peso %'] = 100 / len(df_sim)
                     else:
                         total_dy = df_sim['DY %'].sum()
                         df_sim['Peso %'] = (df_sim['DY %'] / total_dy * 100) if total_dy > 0 else 100/len(df_sim)
                     
-                    # Cálculos de cotas
                     df_sim['Aporte'] = valor_aporte * (df_sim['Peso %'] / 100)
                     df_sim['Qtd'] = (df_sim['Aporte'] / df_sim['Preço']).apply(np.floor)
                     df_sim['Investido'] = df_sim['Qtd'] * df_sim['Preço']
                     df_sim['Renda Anual'] = df_sim['Qtd'] * df_sim['Div_Anual']
                     df_sim['Renda Mensal'] = df_sim['Renda Anual'] / 12
                     
-                    # Totais
                     total_invest = df_sim['Investido'].sum()
                     renda_mensal = df_sim['Renda Mensal'].sum()
                     yield_cart = (df_sim['Renda Anual'].sum() / total_invest * 100) if total_invest > 0 else 0
@@ -389,19 +395,16 @@ with tab_simulador:
                     
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Total Investido", f"R$ {total_invest:,.2f}")
-                    m2.metric("Yield Carteira (a.a.)", f"{yield_cart:.2f}%")
-                    m3.metric("Sobra de Caixa", f"R$ {valor_aporte - total_invest:,.2f}")
+                    m2.metric("Yield Anual", f"{yield_cart:.2f}%")
+                    m3.metric("Caixa Restante", f"R$ {valor_aporte - total_invest:,.2f}")
                     
-                    # Tabela detalhada
                     df_exib = df_sim[['Ação', 'Qtd', 'Investido', 'Renda Mensal', 'DY %']].copy()
-                    df_exib['Investido'] = df_exib['Investido'].apply(lambda x: f"R$ {x:,.2f}")
-                    df_exib['Renda Mensal'] = df_exib['Renda Mensal'].apply(lambda x: f"R$ {x:,.2f}")
+                    for c in ['Investido', 'Renda Mensal']: df_exib[c] = df_exib[c].apply(lambda x: f"R$ {x:,.2f}")
                     df_exib['DY %'] = df_exib['DY %'].apply(lambda x: f"{x:.2f}%")
                     
                     st.dataframe(df_exib, use_container_width=True)
                 else:
-                    st.error("Não foi possível obter dados das ações selecionadas.")
+                    st.error("Erro ao obter dados para simulação.")
 
-# Rodapé
 st.divider()
-st.caption(f"Blindagem Financeira Pro 4.6 • Atualizado em {datetime.now().year}")
+st.caption(f"Blindagem Financeira Pro 4.7 • {datetime.now().year}")
